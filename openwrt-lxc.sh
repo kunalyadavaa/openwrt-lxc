@@ -19,7 +19,7 @@ function msg_error() { echo -e " ${CROSS} ${RD}$1${CL}"; }
 # Default values
 VMID=$(pvesh get /cluster/nextid)
 HN="openwrt"
-STORAGE="local"
+STORAGE="local-lvm"
 BRG_WAN="vmbr0"
 BRG_LAN="vmbr0"
 LAN_IP="192.168.1.1/24"
