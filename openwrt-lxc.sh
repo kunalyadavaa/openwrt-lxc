@@ -1,67 +1,72 @@
 #!/usr/bin/env bash
-# OpenWrt LXC Container Installer for Proxmox
+# OpenWrt LXC Installer for Proxmox
+# Based on community-scripts framework
 # Author: texy + ChatGPT
 # License: MIT
 
-set -euo pipefail
+APP="openwrt"
+var_tags="${var_tags:-os}"
+var_cpu="${var_cpu:-1}"
+var_ram="${var_ram:-256}"
+var_disk="${var_disk:-1}"
+var_unprivileged="${var_unprivileged:-0}"   # OpenWrt works best privileged
+var_os="unmanaged"
+var_version="21.02.4"
 
-YW=$(echo "\033[33m")
-GN=$(echo "\033[1;92m")
-RD=$(echo "\033[01;31m")
-CL=$(echo "\033[m")
-CM="${GN}✓${CL}"
-CROSS="${RD}✗${CL}"
+# Load community-scripts functions
+source <(curl -fsSL https://git.community-scripts.org/community-scripts/ProxmoxVE/raw/branch/main/misc/build.func)
 
-function msg_info() { echo -ne " [..] ${YW}$1...${CL}"; }
-function msg_ok() { echo -e " ${CM} ${GN}$1${CL}"; }
-function msg_error() { echo -e " ${CROSS} ${RD}$1${CL}"; }
+header_info "$APP"
+variables
+color
+catch_errors
 
-# Default values
-VMID=$(pvesh get /cluster/nextid)
-HN="openwrt"
-STORAGE="local-lvm"
-BRG_WAN="vmbr0"
-BRG_LAN="vmbr0"
-LAN_IP="192.168.1.1/24"
-WAN_DHCP="true"
+function update_script() {
+  msg_error "No update routine for OpenWrt. Recreate container instead."
+  exit
+}
 
-msg_info "Fetching latest OpenWrt release"
-VERSION="21.02.4"
-ROOTFS_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/x86/64/openwrt-${VERSION}-x86-64-rootfs.tar.gz"
-wget -q "$ROOTFS_URL" -O /tmp/openwrt-rootfs.tar.gz
-msg_ok "Downloaded OpenWrt rootfs ${VERSION}"
+# Ensure storage supports rootdir
+function detect_storage() {
+  while read -r id type rest; do
+    if pvesh get /storage/$id --output-format json | grep -q rootdir; then
+      echo "$id"
+      return
+    fi
+  done < <(pvesh get /storage --output-format=json | jq -r '.[].storage + " " + .type')
+  msg_error "No storage with 'rootdir' support found!"
+  exit 1
+}
 
-msg_info "Creating LXC container (VMID ${VMID})"
-pct create $VMID /tmp/openwrt-rootfs.tar.gz \
-  -arch amd64 \
-  -hostname $HN \
-  -cores 1 \
-  -memory 256 \
-  -swap 0 \
-  -net0 name=lan,bridge=$BRG_LAN,hwaddr=02:$(openssl rand -hex 5 | sed 's/\(..\)/\1:/g; s/.$//') \
-  -net1 name=wan,bridge=$BRG_WAN,hwaddr=02:$(openssl rand -hex 5 | sed 's/\(..\)/\1:/g; s/.$//') \
-  -rootfs $STORAGE:1 \
-  -unprivileged 0 \
-  -features nesting=1
-msg_ok "Container created"
+function build_container_config() {
+  # Fetch OpenWrt rootfs
+  ROOTFS_URL="https://downloads.openwrt.org/releases/${var_version}/targets/x86/64/openwrt-${var_version}-x86-64-rootfs.tar.gz"
+  msg_info "Downloading OpenWrt rootfs ${var_version}"
+  wget -q "$ROOTFS_URL" -O /tmp/openwrt-rootfs.tar.gz
+  msg_ok "Downloaded OpenWrt rootfs"
 
-msg_info "Configuring OpenWrt networking"
-cat <<EOF > /etc/pve/lxc/${VMID}.conf
-arch: amd64
-cores: 1
-hostname: $HN
-memory: 256
-net0: name=lan,bridge=$BRG_LAN,firewall=1
-net1: name=wan,bridge=$BRG_WAN,firewall=1
-rootfs: $STORAGE:1
-ostype: unmanaged
-unprivileged: 0
-features: nesting=1
-EOF
-msg_ok "Networking set: LAN=$LAN_IP, WAN=dhcp"
+  STORAGE=$(detect_storage)
 
-msg_info "Starting container"
-pct start $VMID
-sleep 5
-msg_ok "OpenWrt LXC ${HN} started (VMID $VMID)"
-echo -e "\n${GN}Login via:${CL} pct attach $VMID\n"
+  msg_info "Creating LXC container (VMID ${CTID})"
+  pct create $CTID /tmp/openwrt-rootfs.tar.gz \
+    -arch amd64 \
+    -hostname $HN \
+    -cores $var_cpu \
+    -memory $var_ram \
+    -swap 0 \
+    -net0 name=lan,bridge=vmbr0,firewall=1 \
+    -net1 name=wan,bridge=vmbr0,firewall=1 \
+    -rootfs $STORAGE:${var_disk} \
+    -unprivileged $var_unprivileged \
+    -features nesting=1 \
+    -ostype unmanaged
+  msg_ok "Container created"
+}
+
+start
+build_container
+description
+
+msg_ok "Completed Successfully!\n"
+echo -e "${CREATING}${GN}${APP} LXC has been successfully initialized!${CL}"
+echo -e "${INFO}${YW} You can attach with:${CL} pct attach ${CTID}"
